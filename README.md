@@ -1,5 +1,5 @@
 # DISTRIBUTED COMPUTE CLUSTER
-*Concurrent and Distributed Programming Course Project - 2025-2026 - ISI LM, DISI, UNIBO*
+*Distributed Software Systems Course Project - 2025-2026 - ISI LM, DISI, UNIBO*
 
 ## VISION:
 The goal of this project is to design and implement a fault-tolerant distributed compute cluster, capable of executing computational workloads across multiple nodes in a coordinated, scalable and resilient manner. This system is conceived as a decentralized distributed system in which multiple coordinator nodes collaborate to manage the cluster state, schedule tasks, and recover from failures. The system is designed to remain operational even in the presence of node failures, network issues, or partial system outages.
