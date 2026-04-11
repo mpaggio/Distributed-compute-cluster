@@ -1,0 +1,22 @@
+[project]
+name = "distributed-compute-cluster"
+version = "0.1.0"
+description = "Fault-tolerant distributed compute cluster for distributed systems course"
+authors = [
+    {name = "Marco Paggetti",email = "marco.paggetti@studio.unibo.it"}
+]
+license = {text = "MIT"}
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[dependency-groups]
+dev = [
+    "pytest (>=9.0.3,<10.0.0)"
+]
