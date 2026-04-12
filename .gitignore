@@ -2,3 +2,5 @@
 .env.*
 .vscode/*
 .DS_STORE
+Timetable.txt
+Notes.md
