@@ -15,4 +15,3 @@ class Worker:
         event = Event(EventType.TASK_REQUEST, self.id, self.address, {})
         serialized_event = self.serializer.serialize(event)
         connection.sendall(serialized_event.encode("utf-8"))
-        

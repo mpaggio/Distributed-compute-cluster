@@ -1,6 +1,14 @@
-.env
-.env.*
+__pycache__/
+*.py[cod]
+*.pyo
+
+.venv/
+venv/
+.env/
+
+.idea/
 .vscode/*
+
 .DS_STORE
 Timetable.txt
 Notes.md
