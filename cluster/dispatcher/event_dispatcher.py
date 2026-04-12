@@ -1,4 +1,5 @@
-from cluster.common import Event, EventType
+from cluster.common.event import Event
+from cluster.common.event_type import EventType
 
 class EventDispatcher:
 
