@@ -1,3 +1,5 @@
+from cluster.common import Event, EventType
+
 class EventDispatcher:
 
     def __init__(self): 
