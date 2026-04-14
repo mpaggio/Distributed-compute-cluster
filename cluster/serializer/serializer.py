@@ -1,5 +1,5 @@
-from cluster.common.event import Event
-from cluster.common.event_type import EventType
+from common.event import Event
+from common.event_type import EventType
 import json
 
 class Serializer:
@@ -15,7 +15,7 @@ class Serializer:
     def deserialize(self, json_str: str) -> Event:
         event_dict: dict = json.loads(json_str)
         return Event(
-            type = EventType(event_dict["type"]), 
+            type = EventType[event_dict["type"]], 
             node_id = event_dict["node_id"], 
             address = event_dict["address"], 
             payload = event_dict["payload"]

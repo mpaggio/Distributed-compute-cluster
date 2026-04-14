@@ -1,7 +1,7 @@
 import socket
-from cluster.serializer.serializer import Serializer
-from cluster.common.event import Event
-from cluster.common.event_type import EventType
+from serializer.serializer import Serializer
+from common.event import Event
+from common.event_type import EventType
 
 class Worker:
     def __init__(self):

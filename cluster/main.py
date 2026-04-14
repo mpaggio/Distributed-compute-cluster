@@ -1,6 +1,6 @@
 from threading import Thread
-from cluster.coordinator.coordinator import Coordinator
-from cluster.worker.worker import Worker
+from coordinator.coordinator import Coordinator
+from worker.worker import Worker
 import time
 
 def main():
@@ -12,3 +12,6 @@ def main():
     worker = Worker()
     worker_thread = Thread(target=worker.connect, args=(addr, int(port),))
     worker_thread.start()
+
+if __name__ == "__main__":
+    main()

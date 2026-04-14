@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from cluster.common.event_type import EventType
+from common.event_type import EventType
 
 @dataclass(frozen=True)
 class Event:
