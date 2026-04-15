@@ -1,11 +1,11 @@
 import socket
 import time
 from threading import Thread
-from serializer.serializer import Serializer
-from common.event import Event
-from common.event_type import EventType
-from dispatcher.event_dispatcher import EventDispatcher
-from sender.message_sender import MessageSender
+from cluster.serializer.serializer import Serializer
+from cluster.common.event import Event
+from cluster.common.event_type import EventType
+from cluster.dispatcher.event_dispatcher import EventDispatcher
+from cluster.sender.message_sender import MessageSender
 
 class Worker:
     def __init__(self):

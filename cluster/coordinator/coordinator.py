@@ -1,9 +1,9 @@
 import socket
-from dispatcher.event_dispatcher import EventDispatcher
-from serializer.serializer import Serializer
-from common.event_type import EventType
-from common.event import Event
-from sender.message_sender import MessageSender
+from cluster.dispatcher.event_dispatcher import EventDispatcher
+from cluster.serializer.serializer import Serializer
+from cluster.common.event_type import EventType
+from cluster.common.event import Event
+from cluster.sender.message_sender import MessageSender
 
 class Coordinator:
     def __init__(self):

@@ -1,6 +1,6 @@
 from threading import Thread
-from coordinator.coordinator import Coordinator
-from worker.worker import Worker
+from cluster.coordinator.coordinator import Coordinator
+from cluster.worker.worker import Worker
 import time
 
 def main():

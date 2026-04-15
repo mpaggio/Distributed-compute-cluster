@@ -1,6 +1,6 @@
 import socket
-from common.event import Event
-from serializer.serializer import Serializer
+from cluster.common.event import Event
+from cluster.serializer.serializer import Serializer
 
 class MessageSender():
     def __init__(self):
