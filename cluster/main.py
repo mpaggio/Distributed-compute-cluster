@@ -10,7 +10,7 @@ def main():
     time.sleep(5.0)
     addr, _, port = coordinator.address.partition(":")
     worker = Worker()
-    worker_thread = Thread(target=worker.connect, args=(addr, int(port),))
+    worker_thread = Thread(target=worker.start, args=(addr, int(port),))
     worker_thread.start()
 
 if __name__ == "__main__":

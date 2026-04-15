@@ -12,6 +12,7 @@ class Coordinator:
         self.dispatcher = EventDispatcher()
         self.serializer = Serializer()
         self.message_sender = MessageSender()
+        self.connections = {}
         self.dispatcher.register_handler(EventType.TASK_REQUEST, self.handle_task_request)
 
     def start(self):
@@ -28,15 +29,27 @@ class Coordinator:
 
     def handle_connection(self, conn: socket.socket):
         while True:
-                data_bytes = conn.recv(4096)
-                if not data_bytes:
-                    break
-                print("Decoded: ", data_bytes.decode())
-                data = self.serializer.deserialize(data_bytes.decode())
-                self.dispatcher.dispatch(data, conn)
+            data_bytes = conn.recv(4096)
+            if not data_bytes:
+                break
+            print("Decoded: ", data_bytes.decode())
+            data = self.serializer.deserialize(data_bytes.decode())
+            if data.node_id not in self.connections or self.connections[data.node_id] != conn:
+                self.connections[data.node_id] = conn
+            self.dispatcher.dispatch(data)
+        self.handle_connection_closure(conn)
         conn.close()
 
-    def handle_task_request(self, event: Event, conn: socket.socket):
+    def handle_connection_closure(self, conn: socket.socket):
+        node_id_to_remove = None
+        for node_id, stored_conn in self.connections.items():
+            if stored_conn == conn:
+                node_id_to_remove = node_id
+                break
+        if node_id_to_remove: 
+            self.connections.pop(node_id_to_remove)
+
+    def handle_task_request(self, event: Event):
          print("Worker " + event.node_id + " ha richiesto un task")
          response = Event (
             type = EventType.TASK_ASSIGN,
@@ -44,4 +57,4 @@ class Coordinator:
             address = self.address,
             payload = {"task" : "example"}
          )
-         self.message_sender.send(conn, response)
+         self.message_sender.send(self.connections[event.node_id], response)
