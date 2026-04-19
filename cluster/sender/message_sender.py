@@ -7,4 +7,4 @@ class MessageSender():
         self.serializer = Serializer()
 
     def send(self, conn: socket.socket, event: Event):
-        conn.sendall(self.serializer.serialize(event).encode("utf-8"))
+        conn.sendall((self.serializer.serialize(event) + "\n").encode("utf-8"))
