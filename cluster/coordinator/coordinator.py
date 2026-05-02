@@ -44,7 +44,7 @@ class Coordinator:
                     continue
                 except OSError:
                     break
-                self.handle_connection(conn)
+                Thread(target=self.handle_connection, args=(conn,), daemon=True).start()
         except KeyboardInterrupt:
             self.stop()
 
@@ -100,17 +100,24 @@ class Coordinator:
         self.connections_last_received[event.node_id] = time.time()
 
     def monitor_workers(self):
+        print(f"[{self.id}]: monitoring workers...")
         while self.running:
-            timeout = 5
+            timeout = 3
             starting_time = time.time()
             to_remove = []
-            for node_id, last_seen in self.connections_last_received.items():
+            print(f"[{self.id}]: last_seen={self.connections_last_received}")
+            for node_id in list(self.connections_last_received.keys()):
+                last_seen = self.connections_last_received.get(node_id)
+                if last_seen is None:
+                    continue
                 if starting_time - last_seen > timeout:
-                    print(f"[{self.id}]: coordinator {node_id} is dead")
+                    print(f"[{self.id}]: worker {node_id} is dead")
                     to_remove.append(node_id)
             for node_id in to_remove:
-                self.connections.pop(node_id)
-                self.connections_last_received.pop(node_id)
+                print(f"[{self.id}]: removing worker {node_id}...")
+                self.connections.pop(node_id, None)
+                self.connections_last_received.pop(node_id, None)
+                print(f"[{self.id}]: worker {node_id} removed")
             time.sleep(1)
 
     def handle_heartbeat(self, event: Event):
