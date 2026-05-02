@@ -1,6 +1,7 @@
 import time
 import socket
 from threading import Thread
+from queue import Queue, Empty
 from cluster.dispatcher.event_dispatcher import EventDispatcher
 from cluster.serializer.serializer import Serializer
 from cluster.common.event_type import EventType
@@ -17,6 +18,7 @@ class Coordinator:
         self.connections = {}
         self.connections_last_received = {}
         self.running = True
+        self.send_queue = Queue()
         self.dispatcher.register_handler(EventType.TASK_REQUEST, self.handle_task_request)
         self.dispatcher.register_handler(EventType.TASK_COMPLETED, self.handle_task_completed)
         self.dispatcher.register_handler(EventType.HEARTBEAT, self.handle_heartbeat)
@@ -25,6 +27,8 @@ class Coordinator:
         print(f"[{self.id}]: coordinator started!")
         self.monitor_thread = Thread(target=self.monitor_workers)
         self.monitor_thread.start()
+        self.sender_thread = Thread(target=self.start_sender, daemon=True)
+        self.sender_thread.start()
         self.connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         addr, _, port = self.address.partition(":")
         self.connection.bind((addr, int(port)))
@@ -52,7 +56,7 @@ class Coordinator:
                 data_bytes = conn.recv(4096)
             except socket.timeout:
                 continue
-            except Exception:
+            except OSError:
                 break
             if not data_bytes:
                 break
@@ -62,9 +66,9 @@ class Coordinator:
                 event, buffer = buffer.split("\n", 1)
                 print(f"[{self.id}]: decoded {event}")
                 data = self.serializer.deserialize(event)
-            if data.node_id not in self.connections or self.connections[data.node_id] != conn:
-                self.connections[data.node_id] = conn
-            self.dispatcher.dispatch(data)
+                if data.node_id not in self.connections or self.connections[data.node_id] != conn:
+                    self.connections[data.node_id] = conn
+                self.dispatcher.dispatch(data)
         self.handle_connection_closure(conn)
         conn.close()
 
@@ -87,7 +91,9 @@ class Coordinator:
             address = self.address,
             payload = {"task" : "example"}
          )
-         self.message_sender.send(self.connections[event.node_id], response)
+         conn = self.connections.get(event.node_id)
+         if conn:
+            self.send_queue.put((response, conn))
 
     def handle_task_completed(self, event: Event):
         print(f"[{self.id}]: worker {event.node_id} completed task")
@@ -111,8 +117,22 @@ class Coordinator:
         print(f"[{self.id}]: received heartbeat from {event.address}")
         self.connections_last_received[event.node_id] = time.time()
 
+    def start_sender(self):
+        while self.running:
+            try:
+                event, conn = self.send_queue.get(timeout=1)
+            except Empty:
+                continue
+            if event is None:
+                break
+            try:
+                self.message_sender.send(conn, event)
+            except OSError:
+                break
+
     def stop(self):
         self.running = False
+        self.send_queue.put((None,None))
         try:
             self.connection.close()
         except:
@@ -130,4 +150,8 @@ class Coordinator:
 
 if __name__ == "__main__":
     coordinator = Coordinator()
-    coordinator.start()
+    try:
+        coordinator.start()
+    except KeyboardInterrupt:
+        print(f"[{coordinator.id}]: shutting down coordinator...")
+        coordinator.stop()

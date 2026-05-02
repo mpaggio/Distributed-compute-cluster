@@ -1,6 +1,7 @@
 import socket
 import time
 from threading import Thread
+from queue import Queue, Empty
 from cluster.serializer.serializer import Serializer
 from cluster.common.event import Event
 from cluster.common.event_type import EventType
@@ -17,12 +18,15 @@ class Worker:
         self.id = "worker#1"
         self.address = "127.0.0.1:5001"
         self.last_event_received = None
+        self.send_queue = Queue()
         self.dispatcher.register_handler(EventType.TASK_ASSIGN, self.handle_task_assign)
 
     def start(self, address: str, port: int):
         self.connect(address, port)
         self.heartbeat_thread = Thread(target=self.start_heartbeat, daemon=True)
         self.heartbeat_thread.start()
+        self.send_thread = Thread(target=self.start_sender, daemon=True)
+        self.send_thread.start()
         self.handle_connection()
 
     def connect(self, address: str, port: int):
@@ -30,7 +34,7 @@ class Worker:
         self.connection.connect((address, port))
         self.connection.settimeout(1.0)
         event = Event(EventType.TASK_REQUEST, self.id, self.address, {})
-        self.message_sender.send(self.connection, event)
+        self.send_queue.put(event)
 
     def handle_connection(self):
         buffer = ""
@@ -40,6 +44,8 @@ class Worker:
                 data_bytes = self.connection.recv(4096)
             except socket.timeout:
                 continue
+            except OSError:
+                break
             if not data_bytes:
                 break
             data_decoded = data_bytes.decode()
@@ -60,8 +66,8 @@ class Worker:
     def execute_task(self, event: Event):
         print("[" + self.id + "]: starting to execute given event (" + event.type.name + ") ...")
         time.sleep(3.0)
-        event = Event(EventType.TASK_COMPLETED, self.id, self.address, {})
-        self.message_sender.send(self.connection, event)
+        completed_event = Event(EventType.TASK_COMPLETED, self.id, self.address, {})
+        self.send_queue.put(completed_event)
         print("[" + self.id + "]: completed execution of given event")
 
     def start_heartbeat(self):
@@ -71,17 +77,32 @@ class Worker:
                 continue
             try:
                 event = Event(EventType.HEARTBEAT, self.id, self.address, {})
-                self.message_sender.send(self.connection, event)
+                self.send_queue.put(event)
                 print(f"[{self.id}]: heartbeat sent")
             except Exception:
                 print(f"[{self.id}]: heartbeat failed")
                 break
             time.sleep(1)
 
+    def start_sender(self):
+        while self.running:
+            try:
+                event = self.send_queue.get(timeout=1)
+            except Empty:
+                continue
+            if event is None:
+                break
+            try:
+                self.message_sender.send(self.connection, event)
+            except OSError:
+                break
+
     def stop(self):
         self.running = False
+        self.send_queue.put(None)
         try:
             self.heartbeat_thread.join(timeout=2)
+            self.send_thread.join(timeout=2)
             if self.connection:
                 self.connection.shutdown(socket.SHUT_RDWR)
                 self.connection.close()
@@ -90,4 +111,8 @@ class Worker:
 
 if __name__ == "__main__":
     worker = Worker()
-    worker.start("127.0.0.1", 5002)
+    try:
+        worker.start("127.0.0.1", 5002)
+    except KeyboardInterrupt:
+        print(f"[{worker.id}]: shutting down worker...")
+        worker.stop()
