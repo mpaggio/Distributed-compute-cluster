@@ -19,9 +19,13 @@ class Coordinator:
         self.connections_last_received = {}
         self.running = True
         self.send_queue = Queue()
+        self.next_worker_id = 1
+        self.conn_to_worker = {}
+        self.pending_connections = set()
         self.dispatcher.register_handler(EventType.TASK_REQUEST, self.handle_task_request)
         self.dispatcher.register_handler(EventType.TASK_COMPLETED, self.handle_task_completed)
         self.dispatcher.register_handler(EventType.HEARTBEAT, self.handle_heartbeat)
+        self.dispatcher.register_handler(EventType.REGISTER, self.handle_register)
 
     def start(self):
         print(f"[{self.id}]: coordinator started!")
@@ -66,9 +70,15 @@ class Coordinator:
                 event, buffer = buffer.split("\n", 1)
                 print(f"[{self.id}]: decoded {event}")
                 data = self.serializer.deserialize(event)
-                if data.node_id not in self.connections or self.connections[data.node_id] != conn:
-                    self.connections[data.node_id] = conn
-                self.dispatcher.dispatch(data)
+                if conn not in self.conn_to_worker:
+                    worker_id = f"worker#{self.next_worker_id}"
+                    self.next_worker_id += 1
+                    self.conn_to_worker[conn] = worker_id
+                    self.connections[worker_id] = conn
+                    self.connections_last_received[worker_id] = time.time()
+                worker_id = self.conn_to_worker[conn]
+                new_data = Event(data.type, worker_id, data.address, data.payload)
+                self.dispatcher.dispatch(new_data)
         self.handle_connection_closure(conn)
         conn.close()
 
@@ -82,8 +92,23 @@ class Coordinator:
             self.connections.pop(node_id_to_remove)
             self.connections_last_received.pop(node_id_to_remove)
 
+    def handle_register(self, event: Event):
+        print(f"[{self.id}]: worker registration requested")
+        conn = self.connections.get(event.node_id)
+        if not conn:
+            return
+        response = Event(EventType.ASSIGN_ID, self.id, self.address, {"id": event.node_id})
+        self.send_queue.put((response, conn))
+        print(f"[{self.id}]: assigned id {event.node_id}")
+
+    def pick_worker(self):
+        for node_id, conn in self.connections.items():
+            if node_id in self.connections_last_received:
+                return node_id, conn
+        return None, None
+
     def handle_task_request(self, event: Event):
-         print(f"[{self.id}]: worker {event.node_id} ha richiesto un task")
+         print(f"[{self.id}]: worker {event.node_id} requested task")
          self.connections_last_received[event.node_id] = time.time()
          response = Event (
             type = EventType.TASK_ASSIGN,
@@ -91,8 +116,9 @@ class Coordinator:
             address = self.address,
             payload = {"task" : "example"}
          )
-         conn = self.connections.get(event.node_id)
+         node_id, conn = self.pick_worker()
          if conn:
+            print(f"[{self.id}]: assigned task to worker {node_id}")
             self.send_queue.put((response, conn))
 
     def handle_task_completed(self, event: Event):
@@ -121,7 +147,7 @@ class Coordinator:
             time.sleep(1)
 
     def handle_heartbeat(self, event: Event):
-        print(f"[{self.id}]: received heartbeat from {event.address}")
+        #print(f"[{self.id}]: received heartbeat from {event.address}")  #Decomment only for testing
         self.connections_last_received[event.node_id] = time.time()
 
     def start_sender(self):

@@ -15,11 +15,12 @@ class Worker:
         self.message_sender = MessageSender()
         self.connection = None
         self.running = True
-        self.id = "worker#1"
+        self.id = "unknown"
         self.address = "127.0.0.1:5001"
         self.last_event_received = None
         self.send_queue = Queue()
         self.dispatcher.register_handler(EventType.TASK_ASSIGN, self.handle_task_assign)
+        self.dispatcher.register_handler(EventType.ASSIGN_ID, self.handle_assign_id)
 
     def start(self, address: str, port: int):
         self.connect(address, port)
@@ -33,8 +34,8 @@ class Worker:
         self.connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.connection.connect((address, port))
         self.connection.settimeout(1.0)
-        event = Event(EventType.TASK_REQUEST, self.id, self.address, {})
-        self.send_queue.put(event)
+        register_event = Event(EventType.REGISTER, self.id, self.address, {})
+        self.send_queue.put(register_event)
 
     def handle_connection(self):
         buffer = ""
@@ -70,9 +71,18 @@ class Worker:
         self.send_queue.put(completed_event)
         print("[" + self.id + "]: completed execution of given event")
 
+    def handle_assign_id(self, event: Event):
+        self.id = event.payload["id"]
+        print(f"[{self.id}]: assigned id {self.id}")
+        event = Event(EventType.TASK_REQUEST, self.id, self.address, {})
+        self.send_queue.put(event)
+
     def start_heartbeat(self):
         while self.running:
             if not self.connection:
+                time.sleep(0.1)
+                continue
+            if self.id == "unknown":
                 time.sleep(0.1)
                 continue
             try:
