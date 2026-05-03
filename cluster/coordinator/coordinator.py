@@ -38,19 +38,16 @@ class Coordinator:
         self.connection.bind((addr, int(port)))
         self.connection.listen()
         self.connection.settimeout(1.0)
-        try:
-            while self.running:
-                try:  
-                    print(f"[{self.id}]: waiting for connection ...")
-                    conn, addr = self.connection.accept()
-                    print(f"[{self.id}]: connection from {str(addr)}")
-                except socket.timeout:
-                    continue
-                except OSError:
-                    break
-                Thread(target=self.handle_connection, args=(conn,), daemon=True).start()
-        except KeyboardInterrupt:
-            self.stop()
+        while self.running:
+            try:  
+                print(f"[{self.id}]: waiting for connection ...")
+                conn, addr = self.connection.accept()
+                print(f"[{self.id}]: connection from {str(addr)}")
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            Thread(target=self.handle_connection, args=(conn,), daemon=True).start()
 
     def handle_connection(self, conn: socket.socket):
         buffer = ""
