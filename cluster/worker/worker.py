@@ -5,6 +5,8 @@ from queue import Queue, Empty
 from cluster.serializer.serializer import Serializer
 from cluster.common.event import Event
 from cluster.common.event_type import EventType
+from cluster.common.task import Task
+from cluster.common.task_type import TaskType
 from cluster.dispatcher.event_dispatcher import EventDispatcher
 from cluster.sender.message_sender import MessageSender
 
@@ -40,7 +42,7 @@ class Worker:
     def handle_connection(self):
         buffer = ""
         while self.running:
-            print("[" + self.id + "]: waiting for response ...")
+            print(f"[{self.id}]: waiting for response ...")
             try:
                 data_bytes = self.connection.recv(4096)
             except socket.timeout:
@@ -53,7 +55,7 @@ class Worker:
             buffer += data_decoded
             while "\n" in buffer:
                 event, buffer = buffer.split("\n", 1)
-                print("[" + self.id + "]: received response: " + event)
+                print(f"[{self.id}]: received response ({event})")
                 data = self.serializer.deserialize(event)
                 self.dispatcher.dispatch(data)
         self.running = False
@@ -65,11 +67,17 @@ class Worker:
         task_execution_thread.start()
 
     def execute_task(self, event: Event):
-        print("[" + self.id + "]: starting to execute given event (" + event.type.name + ") ...")
-        time.sleep(3.0)
-        completed_event = Event(EventType.TASK_COMPLETED, self.id, self.address, {})
+        print(f"[{self.id}]: starting to execute given task [{Task.from_dict(event.payload).to_string()}] ...")
+        for _ in range(event.payload["payload"]["duration"]):
+            if not self.running:
+                print(f"[{self.id}]: task execution interrupted.")
+                return
+            time.sleep(1)
+        completed_event = Event(EventType.TASK_COMPLETED, self.id, self.address, event.payload)
         self.send_queue.put(completed_event)
-        print("[" + self.id + "]: completed execution of given event")
+        request_event = Event(EventType.TASK_REQUEST, self.id, self.address, {})
+        self.send_queue.put(request_event)
+        print(f"[{self.id}]: completed execution of given event.")
 
     def handle_assign_id(self, event: Event):
         self.id = event.payload["id"]
