@@ -28,7 +28,7 @@ class Coordinator:
         self.message_sender = MessageSender()
         self.workers: dict[str, WorkerState] = {}
         self.conn_to_worker: dict[socket.socket, str] = {}
-        self.send_queue = Queue()
+        self.send_queue = Queue(maxsize=1000)
         self.next_worker_id = 1
         self.lock = Lock()
         self.tasks: dict[str, Task] = {}
@@ -102,19 +102,20 @@ class Coordinator:
         conn.close()
 
     def remove_worker(self, node_id):
-        print(f"[{self.id}]: removing worker {node_id}...")
-        if node_id in self.workers:
-            worker = self.workers.get(node_id)
-            if worker:
-                self.conn_to_worker.pop(worker.conn, None)
-                self.workers.pop(node_id, None)
-        for task_id in self.worker_tasks.get(node_id, []):
-            print(f"[{self.id}]: task {task_id} removed from worker {node_id}.")
-            self.tasks[task_id].state = TaskType.ORPHANED
-            print(f"[{self.id}]: {task_id} becoming ORPHANED.")  
-            self.tasks[task_id].assigned_worker = None  
-            self.pending_tasks.append(task_id)
-        self.worker_tasks.pop(node_id, None)
+        with self.lock:
+            print(f"[{self.id}]: removing worker {node_id}...")
+            if node_id in self.workers:
+                worker = self.workers.get(node_id)
+                if worker:
+                    self.conn_to_worker.pop(worker.conn, None)
+                    self.workers.pop(node_id, None)
+            for task_id in self.worker_tasks.get(node_id, []):
+                print(f"[{self.id}]: task {task_id} removed from worker {node_id}.")
+                self.tasks[task_id].state = TaskType.ORPHANED
+                print(f"[{self.id}]: {task_id} becoming ORPHANED.")  
+                self.tasks[task_id].assigned_worker = None  
+                self.pending_tasks.append(task_id)
+            self.worker_tasks.pop(node_id, None)
 
     def handle_connection_closure(self, conn: socket.socket):
         with self.lock:
@@ -123,8 +124,8 @@ class Coordinator:
                 if node_state.conn == conn:
                     node_id_to_remove = node_id
                     break
-            if node_id_to_remove: 
-                self.remove_worker(node_id_to_remove)
+        if node_id_to_remove: 
+            self.remove_worker(node_id_to_remove)
 
     def handle_register(self, event: Event):
         print(f"[{self.id}]: worker registration requested")
@@ -183,12 +184,12 @@ class Coordinator:
         print(f"[{self.id}]: monitoring workers...")
         while self.running:
             time.sleep(1)
-            with self.lock:
-                timeout = 3
-                starting_time = time.time()
-                to_remove = []
-                print(f"[{self.id}]: last_seen={[(i,s.last_received) for i,s in self.workers.items()]}")
-                for node_id in list(self.workers.keys()):
+            timeout = 3
+            starting_time = time.time()
+            to_remove = []
+            print(f"[{self.id}]: last_seen={[(i,s.last_received) for i,s in self.workers.items()]}")
+            with self.lock:    
+                for node_id in self.workers.keys():
                     worker_state = self.workers.get(node_id)
                     if not worker_state:
                         continue
@@ -198,8 +199,8 @@ class Coordinator:
                     if starting_time - last_seen > timeout:
                         print(f"[{self.id}]: worker {node_id} is dead")
                         to_remove.append(node_id)
-                for node_id in to_remove:
-                    self.remove_worker(node_id)
+            for node_id in to_remove:
+                self.remove_worker(node_id)
 
     def handle_heartbeat(self, event: Event):
         with self.lock:

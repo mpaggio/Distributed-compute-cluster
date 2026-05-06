@@ -124,11 +124,11 @@ class Worker:
         self.running = False
         self.send_queue.put(None)
         try:
-            for thread in self.threads:
-                thread.join(timeout=2)
             if self.connection:
                 self.connection.shutdown(socket.SHUT_RDWR)
                 self.connection.close()
+            for thread in self.threads:
+                thread.join(timeout=2)
         except Exception:
             pass
 
