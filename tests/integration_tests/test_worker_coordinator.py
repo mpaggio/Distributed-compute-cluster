@@ -20,8 +20,8 @@ def test_coordinator_worker_simple_integration():
             break
         time.sleep(0.1)
 
-    assert worker.id in coordinator.connections_last_received
-    assert coordinator.connections_last_received[worker.id] is not None
+    assert worker.id in coordinator.workers
+    assert coordinator.workers[worker.id].last_received is not None
     assert worker.last_event_received is not None
     assert worker.last_event_received.type == EventType.TASK_ASSIGN
     worker.stop()
@@ -40,14 +40,14 @@ def test_task_completed_integration():
     start_time = time.time()
     completed_received = False
     while time.time() - start_time < timeout:
-        if worker.id in coordinator.connections_last_received and worker.last_event_received is not None:
+        if worker.id in coordinator.workers and worker.last_event_received is not None:
             completed_received = True
             break
         time.sleep(0.1)
 
     assert completed_received
-    assert worker.id in coordinator.connections_last_received
-    assert coordinator.connections_last_received[worker.id] is not None
+    assert worker.id in coordinator.workers
+    assert coordinator.workers[worker.id].last_received is not None
 
     worker.stop()
     coordinator.stop()

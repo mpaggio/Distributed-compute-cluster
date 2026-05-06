@@ -21,15 +21,18 @@ class Worker:
         self.address = "127.0.0.1:5001"
         self.last_event_received = None
         self.send_queue = Queue()
+        self.threads: list[Thread] = []
         self.dispatcher.register_handler(EventType.TASK_ASSIGN, self.handle_task_assign)
         self.dispatcher.register_handler(EventType.ASSIGN_ID, self.handle_assign_id)
 
     def start(self, address: str, port: int):
         self.connect(address, port)
-        self.heartbeat_thread = Thread(target=self.start_heartbeat, daemon=True)
-        self.heartbeat_thread.start()
-        self.send_thread = Thread(target=self.start_sender, daemon=True)
-        self.send_thread.start()
+        heartbeat_thread = Thread(target=self.start_heartbeat, daemon=True)
+        self.threads.append(heartbeat_thread)
+        heartbeat_thread.start()
+        send_thread = Thread(target=self.start_sender, daemon=True)
+        self.threads.append(send_thread)
+        send_thread.start()
         self.handle_connection()
 
     def connect(self, address: str, port: int):
@@ -63,7 +66,8 @@ class Worker:
 
     def handle_task_assign(self, event: Event):
         self.last_event_received = event
-        task_execution_thread = Thread(target=self.execute_task, args=(event,))
+        task_execution_thread = Thread(target=self.execute_task, args=(event,), daemon=True)
+        self.threads.append(task_execution_thread)
         task_execution_thread.start()
 
     def execute_task(self, event: Event):
@@ -73,6 +77,7 @@ class Worker:
                 print(f"[{self.id}]: task execution interrupted.")
                 return
             time.sleep(1)
+        #time.sleep(event.payload["payload"]["duration"])
         completed_event = Event(EventType.TASK_COMPLETED, self.id, self.address, event.payload)
         self.send_queue.put(completed_event)
         request_event = Event(EventType.TASK_REQUEST, self.id, self.address, {})
@@ -106,21 +111,21 @@ class Worker:
         while self.running:
             try:
                 event = self.send_queue.get(timeout=1)
+                if event is None:
+                    break
+                self.message_sender.send(self.connection, event)
             except Empty:
                 continue
-            if event is None:
-                break
-            try:
-                self.message_sender.send(self.connection, event)
             except OSError:
+                self.running = False
                 break
 
     def stop(self):
         self.running = False
         self.send_queue.put(None)
         try:
-            self.heartbeat_thread.join(timeout=2)
-            self.send_thread.join(timeout=2)
+            for thread in self.threads:
+                thread.join(timeout=2)
             if self.connection:
                 self.connection.shutdown(socket.SHUT_RDWR)
                 self.connection.close()

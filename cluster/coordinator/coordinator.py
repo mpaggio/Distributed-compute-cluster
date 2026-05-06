@@ -13,34 +13,41 @@ from cluster.common.task_type import TaskType
 from cluster.common.task import Task
 from cluster.sender.message_sender import MessageSender
 
+class WorkerState:
+    def __init__(self, conn: socket, last: float):
+        self.conn: socket = conn
+        self.last_received: float = last
+
 class Coordinator:
     def __init__(self):
-        self.address = "127.0.0.1:5002"
+        self.running = True
         self.id = "coordinator#1"
+        self.address = "127.0.0.1:5002"
         self.dispatcher = EventDispatcher()
         self.serializer = Serializer()
         self.message_sender = MessageSender()
-        self.connections = {}
-        self.conn_to_worker = {}
-        self.connections_last_received = {}
-        self.running = True
+        self.workers: dict[str, WorkerState] = {}
+        self.conn_to_worker: dict[socket.socket, str] = {}
         self.send_queue = Queue()
         self.next_worker_id = 1
-        self.tasks: dict = {}
-        self.worker_tasks: dict = {}
-        self.pending_tasks = deque()
         self.lock = Lock()
+        self.tasks: dict[str, Task] = {}
+        self.worker_tasks: dict[str, list[str]] = {}
+        self.pending_tasks: deque[str] = deque()
+        self.threads: list[Thread] = []
+        self.dispatcher.register_handler(EventType.REGISTER, self.handle_register)
+        self.dispatcher.register_handler(EventType.HEARTBEAT, self.handle_heartbeat)
         self.dispatcher.register_handler(EventType.TASK_REQUEST, self.handle_task_request)
         self.dispatcher.register_handler(EventType.TASK_COMPLETED, self.handle_task_completed)
-        self.dispatcher.register_handler(EventType.HEARTBEAT, self.handle_heartbeat)
-        self.dispatcher.register_handler(EventType.REGISTER, self.handle_register)
 
     def start(self):
         print(f"[{self.id}]: coordinator started!")
-        self.monitor_thread = Thread(target=self.monitor_workers)
-        self.monitor_thread.start()
-        self.sender_thread = Thread(target=self.start_sender, daemon=True)
-        self.sender_thread.start()
+        monitor_thread = Thread(target=self.monitor_workers, daemon=True)
+        self.threads.append(monitor_thread)
+        monitor_thread.start()
+        sender_thread = Thread(target=self.start_sender, daemon=True)
+        self.threads.append(sender_thread)
+        sender_thread.start()
         self.connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         addr, _, port = self.address.partition(":")
         self.connection.bind((addr, int(port)))
@@ -60,7 +67,9 @@ class Coordinator:
                 continue
             except OSError:
                 break
-            Thread(target=self.handle_connection, args=(conn,), daemon=True).start()
+            connection_thread = Thread(target=self.handle_connection, args=(conn,), daemon=True)
+            self.threads.append(connection_thread)
+            connection_thread.start()
 
     def handle_connection(self, conn: socket.socket):
         buffer = ""
@@ -81,13 +90,12 @@ class Coordinator:
                 print(f"[{self.id}]: decoded {event}")
                 data = self.serializer.deserialize(event)
                 with self.lock:
-                    if conn not in self.conn_to_worker:
+                    worker_id = self.conn_to_worker.get(conn)
+                    if not worker_id:
                         worker_id = f"worker#{self.next_worker_id}"
                         self.next_worker_id += 1
                         self.conn_to_worker[conn] = worker_id
-                        self.connections[worker_id] = conn
-                        self.connections_last_received[worker_id] = time.time()
-                    worker_id = self.conn_to_worker[conn]
+                        self.workers[worker_id] = WorkerState(conn, time.time())
                 new_data = Event(data.type, worker_id, data.address, data.payload)
                 self.dispatcher.dispatch(new_data)
         self.handle_connection_closure(conn)
@@ -95,8 +103,11 @@ class Coordinator:
 
     def remove_worker(self, node_id):
         print(f"[{self.id}]: removing worker {node_id}...")
-        self.connections.pop(node_id, None)
-        self.connections_last_received.pop(node_id, None)
+        if node_id in self.workers:
+            worker = self.workers.get(node_id)
+            if worker:
+                self.conn_to_worker.pop(worker.conn, None)
+                self.workers.pop(node_id, None)
         for task_id in self.worker_tasks.get(node_id, []):
             print(f"[{self.id}]: task {task_id} removed from worker {node_id}.")
             self.tasks[task_id].state = TaskType.ORPHANED
@@ -108,8 +119,8 @@ class Coordinator:
     def handle_connection_closure(self, conn: socket.socket):
         with self.lock:
             node_id_to_remove = None
-            for node_id, stored_conn in self.connections.items():
-                if stored_conn == conn:
+            for node_id, node_state in self.workers.items():
+                if node_state.conn == conn:
                     node_id_to_remove = node_id
                     break
             if node_id_to_remove: 
@@ -118,9 +129,10 @@ class Coordinator:
     def handle_register(self, event: Event):
         print(f"[{self.id}]: worker registration requested")
         with self.lock:
-            conn = self.connections.get(event.node_id)
-            if not conn:
+            worker_id = event.node_id
+            if worker_id not in self.workers:
                 return
+            conn = self.workers[worker_id].conn
             self.worker_tasks[event.node_id] = []
         response = Event(EventType.ASSIGN_ID, self.id, self.address, {"id": event.node_id})
         self.send_queue.put((response, conn))
@@ -129,7 +141,10 @@ class Coordinator:
     def handle_task_request(self, event: Event):
         with self.lock:
             print(f"[{self.id}]: worker {event.node_id} requested task")
-            self.connections_last_received[event.node_id] = time.time()
+            worker = self.workers.get(event.node_id)
+            if not worker:
+                return
+            worker.last_received = time.time()
             worker_id = event.node_id
             if self.pending_tasks:
                 task_assigned_id = self.pending_tasks.popleft()
@@ -139,14 +154,14 @@ class Coordinator:
                 task_assigned.state = TaskType.ASSIGNED
                 task_assigned.assigned_worker = worker_id
                 task_assigned.attempt += 1
-                self.worker_tasks[worker_id].append(task_assigned.task_id)
+                self.worker_tasks.setdefault(worker_id, []).append(task_assigned_id)
                 response = Event (
                     type = EventType.TASK_ASSIGN,
                     node_id = self.id,
                     address = self.address,
                     payload = task_assigned.to_dict()
                 )
-                conn = self.connections.get(worker_id)
+                conn = self.workers.get(worker_id).conn
                 if conn:
                     self.send_queue.put((response, conn))
                     print(f"[{self.id}]: task {task_assigned_id} assigned to worker {worker_id}")
@@ -154,13 +169,15 @@ class Coordinator:
     def handle_task_completed(self, event: Event):
         with self.lock:
             print(f"[{self.id}]: worker {event.node_id} completed task")
-            self.connections_last_received[event.node_id] = time.time()
-            completed_task = Task.from_dict(event.payload)
-            if self.tasks[completed_task.task_id].attempt == completed_task.attempt:
-                self.tasks[completed_task.task_id].state = TaskType.COMPLETED
-            if event.node_id in self.worker_tasks:
-                if completed_task.task_id in self.worker_tasks[event.node_id]:
-                    self.worker_tasks[event.node_id].remove(completed_task.task_id)
+            worker_state = self.workers.get(event.node_id)
+            if worker_state:
+                worker_state.last_received = time.time()
+                completed_task = Task.from_dict(event.payload)
+                if self.tasks[completed_task.task_id].attempt == completed_task.attempt:
+                    self.tasks[completed_task.task_id].state = TaskType.COMPLETED
+                if event.node_id in self.worker_tasks:
+                    if completed_task.task_id in self.worker_tasks[event.node_id]:
+                        self.worker_tasks[event.node_id].remove(completed_task.task_id)
 
     def monitor_workers(self):
         print(f"[{self.id}]: monitoring workers...")
@@ -170,9 +187,12 @@ class Coordinator:
                 timeout = 3
                 starting_time = time.time()
                 to_remove = []
-                print(f"[{self.id}]: last_seen={self.connections_last_received}")
-                for node_id in list(self.connections_last_received.keys()):
-                    last_seen = self.connections_last_received.get(node_id)
+                print(f"[{self.id}]: last_seen={[(i,s.last_received) for i,s in self.workers.items()]}")
+                for node_id in list(self.workers.keys()):
+                    worker_state = self.workers.get(node_id)
+                    if not worker_state:
+                        continue
+                    last_seen = worker_state.last_received
                     if last_seen is None:
                         continue
                     if starting_time - last_seen > timeout:
@@ -183,19 +203,21 @@ class Coordinator:
 
     def handle_heartbeat(self, event: Event):
         with self.lock:
-            self.connections_last_received[event.node_id] = time.time()
+            worker = self.workers.get(event.node_id)
+            if worker:
+                worker.last_received = time.time()
 
     def start_sender(self):
         while self.running:
             try:
                 event, conn = self.send_queue.get(timeout=1)
+                if event is None:
+                    break
+                self.message_sender.send(conn, event)
             except Empty:
                 continue
-            if event is None:
-                break
-            try:
-                self.message_sender.send(conn, event)
             except OSError:
+                self.running = False
                 break
 
     def stop(self):
@@ -203,18 +225,16 @@ class Coordinator:
         self.send_queue.put((None,None))
         try:
             self.connection.close()
-        except:
+        except Exception:
             pass
-        for conn in list(self.connections.values()):
+        for conn in list(s.conn for s in self.workers.values()):
             try:
                 conn.shutdown(socket.SHUT_RDWR)
                 conn.close()
             except Exception:
                 pass
-        try:
-            self.monitor_thread.join(timeout=2)
-        except:
-            pass
+        for thread in self.threads:
+            thread.join(timeout=2)
 
 if __name__ == "__main__":
     coordinator = Coordinator()
