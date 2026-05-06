@@ -1,4 +1,5 @@
 import time
+import uuid
 import socket
 import random
 from collections import deque
@@ -21,7 +22,7 @@ class WorkerState:
 class Coordinator:
     def __init__(self):
         self.running = True
-        self.id = "coordinator#1"
+        self.id = f"coordinator-{uuid.uuid4().hex[:8]}"
         self.address = "127.0.0.1:5002"
         self.dispatcher = EventDispatcher()
         self.serializer = Serializer()
@@ -29,13 +30,12 @@ class Coordinator:
         self.workers: dict[str, WorkerState] = {}
         self.conn_to_worker: dict[socket.socket, str] = {}
         self.send_queue = Queue(maxsize=1000)
-        self.next_worker_id = 1
         self.lock = Lock()
         self.tasks: dict[str, Task] = {}
         self.worker_tasks: dict[str, list[str]] = {}
         self.pending_tasks: deque[str] = deque()
+        self.priority_pending_tasks: deque[str] = deque()
         self.threads: list[Thread] = []
-        self.dispatcher.register_handler(EventType.REGISTER, self.handle_register)
         self.dispatcher.register_handler(EventType.HEARTBEAT, self.handle_heartbeat)
         self.dispatcher.register_handler(EventType.TASK_REQUEST, self.handle_task_request)
         self.dispatcher.register_handler(EventType.TASK_COMPLETED, self.handle_task_completed)
@@ -92,14 +92,25 @@ class Coordinator:
                 with self.lock:
                     worker_id = self.conn_to_worker.get(conn)
                     if not worker_id:
-                        worker_id = f"worker#{self.next_worker_id}"
-                        self.next_worker_id += 1
+                        worker_id = data.node_id
                         self.conn_to_worker[conn] = worker_id
                         self.workers[worker_id] = WorkerState(conn, time.time())
                 new_data = Event(data.type, worker_id, data.address, data.payload)
                 self.dispatcher.dispatch(new_data)
         self.handle_connection_closure(conn)
         conn.close()
+
+    def check_expired_tasks(self):
+        now = time.time()
+        with self.lock:
+            for task_id, task in self.tasks.items():
+                if task.state == TaskType.ASSIGNED and task.expiry is not None:
+                    if now > task.expiry:
+                        print(f"[{self.id}]: task {task_id} expired")
+                        task.state = TaskType.EXPIRED
+                        task.assigned_worker = None
+                        task.expiry = None
+                        self.priority_pending_tasks.append(task_id)
 
     def remove_worker(self, node_id):
         with self.lock:
@@ -114,7 +125,7 @@ class Coordinator:
                 self.tasks[task_id].state = TaskType.ORPHANED
                 print(f"[{self.id}]: {task_id} becoming ORPHANED.")  
                 self.tasks[task_id].assigned_worker = None  
-                self.pending_tasks.append(task_id)
+                self.priority_pending_tasks.append(task_id)
             self.worker_tasks.pop(node_id, None)
 
     def handle_connection_closure(self, conn: socket.socket):
@@ -127,18 +138,6 @@ class Coordinator:
         if node_id_to_remove: 
             self.remove_worker(node_id_to_remove)
 
-    def handle_register(self, event: Event):
-        print(f"[{self.id}]: worker registration requested")
-        with self.lock:
-            worker_id = event.node_id
-            if worker_id not in self.workers:
-                return
-            conn = self.workers[worker_id].conn
-            self.worker_tasks[event.node_id] = []
-        response = Event(EventType.ASSIGN_ID, self.id, self.address, {"id": event.node_id})
-        self.send_queue.put((response, conn))
-        print(f"[{self.id}]: assigned id {event.node_id}")
-
     def handle_task_request(self, event: Event):
         with self.lock:
             print(f"[{self.id}]: worker {event.node_id} requested task")
@@ -147,25 +146,32 @@ class Coordinator:
                 return
             worker.last_received = time.time()
             worker_id = event.node_id
-            if self.pending_tasks:
+            if self.priority_pending_tasks:
+                task_assigned_id = self.priority_pending_tasks.popleft()
+                print(f"[{self.id}]: extracted {task_assigned_id} from priority pending tasks")
+                print(f"[{self.id}]: priority pending tasks remained {self.priority_pending_tasks}")
+            elif self.pending_tasks:
                 task_assigned_id = self.pending_tasks.popleft()
                 print(f"[{self.id}]: extracted {task_assigned_id} from pending tasks")
                 print(f"[{self.id}]: pending tasks remained {self.pending_tasks}")
-                task_assigned: Task = self.tasks[task_assigned_id]
-                task_assigned.state = TaskType.ASSIGNED
-                task_assigned.assigned_worker = worker_id
-                task_assigned.attempt += 1
-                self.worker_tasks.setdefault(worker_id, []).append(task_assigned_id)
-                response = Event (
-                    type = EventType.TASK_ASSIGN,
-                    node_id = self.id,
-                    address = self.address,
-                    payload = task_assigned.to_dict()
-                )
-                conn = self.workers.get(worker_id).conn
-                if conn:
-                    self.send_queue.put((response, conn))
-                    print(f"[{self.id}]: task {task_assigned_id} assigned to worker {worker_id}")
+            else:
+                return
+            task_assigned: Task = self.tasks[task_assigned_id]
+            task_assigned.state = TaskType.ASSIGNED
+            task_assigned.assigned_worker = worker_id
+            task_assigned.attempt += 1
+            task_assigned.expiry = time.time() + Task.EXPIRE_OFFSET_SECONDS
+            self.worker_tasks.setdefault(worker_id, []).append(task_assigned_id)
+            response = Event (
+                type = EventType.TASK_ASSIGN,
+                node_id = self.id,
+                address = self.address,
+                payload = task_assigned.to_dict()
+            )
+            conn = self.workers.get(worker_id).conn
+            if conn:
+                self.send_queue.put((response, conn))
+                print(f"[{self.id}]: task {task_assigned_id} assigned to worker {worker_id}")
 
     def handle_task_completed(self, event: Event):
         with self.lock:
@@ -174,8 +180,9 @@ class Coordinator:
             if worker_state:
                 worker_state.last_received = time.time()
                 completed_task = Task.from_dict(event.payload)
-                if self.tasks[completed_task.task_id].attempt == completed_task.attempt:
-                    self.tasks[completed_task.task_id].state = TaskType.COMPLETED
+                saved_task = self.tasks[completed_task.task_id]
+                if saved_task.state == TaskType.ASSIGNED and saved_task.attempt == completed_task.attempt and saved_task.assigned_worker == completed_task.assigned_worker:
+                    saved_task.state = TaskType.COMPLETED
                 if event.node_id in self.worker_tasks:
                     if completed_task.task_id in self.worker_tasks[event.node_id]:
                         self.worker_tasks[event.node_id].remove(completed_task.task_id)
@@ -201,6 +208,7 @@ class Coordinator:
                         to_remove.append(node_id)
             for node_id in to_remove:
                 self.remove_worker(node_id)
+            self.check_expired_tasks()
 
     def handle_heartbeat(self, event: Event):
         with self.lock:

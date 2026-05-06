@@ -1,5 +1,6 @@
 import socket
 import time
+import uuid
 from threading import Thread
 from queue import Queue, Empty
 from cluster.serializer.serializer import Serializer
@@ -17,13 +18,12 @@ class Worker:
         self.message_sender = MessageSender()
         self.connection = None
         self.running = True
-        self.id = "unknown"
+        self.id = f"worker-{uuid.uuid4().hex[:8]}"
         self.address = "127.0.0.1:5001"
         self.last_event_received = None
         self.send_queue = Queue()
         self.threads: list[Thread] = []
         self.dispatcher.register_handler(EventType.TASK_ASSIGN, self.handle_task_assign)
-        self.dispatcher.register_handler(EventType.ASSIGN_ID, self.handle_assign_id)
 
     def start(self, address: str, port: int):
         self.connect(address, port)
@@ -39,8 +39,8 @@ class Worker:
         self.connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.connection.connect((address, port))
         self.connection.settimeout(1.0)
-        register_event = Event(EventType.REGISTER, self.id, self.address, {})
-        self.send_queue.put(register_event)
+        task_request_event = Event(EventType.TASK_REQUEST, self.id, self.address, {})
+        self.send_queue.put(task_request_event)
 
     def handle_connection(self):
         buffer = ""
@@ -83,12 +83,6 @@ class Worker:
         request_event = Event(EventType.TASK_REQUEST, self.id, self.address, {})
         self.send_queue.put(request_event)
         print(f"[{self.id}]: completed execution of given event.")
-
-    def handle_assign_id(self, event: Event):
-        self.id = event.payload["id"]
-        print(f"[{self.id}]: assigned id {self.id}")
-        event = Event(EventType.TASK_REQUEST, self.id, self.address, {})
-        self.send_queue.put(event)
 
     def start_heartbeat(self):
         while self.running:

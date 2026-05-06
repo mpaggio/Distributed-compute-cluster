@@ -5,3 +5,4 @@ class TaskType(Enum):
     ASSIGNED = 2
     COMPLETED = 3
     ORPHANED = 4
+    EXPIRED = 5
